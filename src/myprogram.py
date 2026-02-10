@@ -1,97 +1,114 @@
 #!/usr/bin/env python
 import os
-import string
-import random
-from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+
+from lm.data_io import load_test_data, load_text_lines, resolve_training_files, write_predictions
+from lm.ngram_model import CharNGramLanguageModel
 
 
-class MyModel:
-    """
-    This is a starter model to get you started. Feel free to modify this file.
-    """
+class MyProgram:
+    @staticmethod
+    def train(
+        work_dir,
+        ngram_order,
+        laplace_alpha,
+        max_chars_per_context,
+        min_context_count,
+        max_contexts,
+    ):
+        if not os.path.isdir(work_dir):
+            print(f"Making working directory {work_dir}")
+            os.makedirs(work_dir)
 
-    @classmethod
-    def load_training_data(cls):
-        # your code here
-        # this particular model doesn't train
-        return []
+        print("Instantiating model")
+        model = CharNGramLanguageModel(
+            ngram_order=ngram_order,
+            laplace_alpha=laplace_alpha,
+            max_chars_per_context=max_chars_per_context,
+            min_context_count=min_context_count,
+            max_contexts=max_contexts,
+        )
 
-    @classmethod
-    def load_test_data(cls, fname):
-        # your code here
-        data = []
-        with open(fname) as f:
-            for line in f:
-                inp = line[:-1]  # the last character is a newline
-                data.append(inp)
-        return data
+        print("Loading training data")
+        training_files = resolve_training_files()
+        train_data = load_text_lines(training_files)
+        print(f"Loaded {len(train_data)} lines from {len(training_files)} file(s)")
 
-    @classmethod
-    def write_pred(cls, preds, fname):
-        with open(fname, 'wt') as f:
-            for p in preds:
-                f.write('{}\n'.format(p))
+        print("Training")
+        model.fit(train_data)
 
-    def run_train(self, data, work_dir):
-        # your code here
-        pass
+        print("Saving model")
+        model.save(work_dir)
 
-    def run_pred(self, data):
-        # your code here
-        preds = []
-        all_chars = string.ascii_letters
-        for inp in data:
-            # this model just predicts a random character each time
-            top_guesses = [random.choice(all_chars) for _ in range(3)]
-            preds.append(''.join(top_guesses))
-        return preds
+    @staticmethod
+    def test(work_dir, test_data_path, test_output_path):
+        print("Loading model")
+        model = CharNGramLanguageModel.load(work_dir)
 
-    def save(self, work_dir):
-        # your code here
-        # this particular model has nothing to save, but for demonstration purposes we will save a blank file
-        with open(os.path.join(work_dir, 'model.checkpoint'), 'wt') as f:
-            f.write('dummy save')
+        print(f"Loading test data from {test_data_path}")
+        test_data = load_test_data(test_data_path)
 
-    @classmethod
-    def load(cls, work_dir):
-        # your code here
-        # this particular model has nothing to load, but for demonstration purposes we will load a blank file
-        with open(os.path.join(work_dir, 'model.checkpoint')) as f:
-            dummy_save = f.read()
-        return MyModel()
+        print("Making predictions")
+        predictions = model.predict_batch(test_data, k=3)
+
+        print(f"Writing predictions to {test_output_path}")
+        assert len(predictions) == len(test_data), (
+            f"Expected {len(test_data)} predictions but got {len(predictions)}"
+        )
+        write_predictions(predictions, test_output_path)
 
 
-if __name__ == '__main__':
+def build_parser():
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.add_argument('mode', choices=('train', 'test'), help='what to run')
-    parser.add_argument('--work_dir', help='where to save', default='work')
-    parser.add_argument('--test_data', help='path to test data', default='example/input.txt')
-    parser.add_argument('--test_output', help='path to write test predictions', default='pred.txt')
-    args = parser.parse_args()
+    parser.add_argument("mode", choices=("train", "test"), help="what to run")
+    parser.add_argument("--work_dir", help="where to save", default="work")
+    parser.add_argument("--test_data", help="path to test data", default="example/input.txt")
+    parser.add_argument("--test_output", help="path to write test predictions", default="pred.txt")
+    parser.add_argument("--ngram_order", type=int, default=6, help="n-gram order")
+    parser.add_argument(
+        "--laplace_alpha",
+        type=float,
+        default=1.0,
+        help="Laplace smoothing alpha (add-alpha); use 1.0 for standard Laplace",
+    )
+    parser.add_argument(
+        "--max_chars_per_context",
+        type=int,
+        default=64,
+        help="max stored next-char candidates per context",
+    )
+    parser.add_argument(
+        "--min_context_count",
+        type=int,
+        default=3,
+        help="drop contexts observed fewer than this many times",
+    )
+    parser.add_argument(
+        "--max_contexts",
+        type=int,
+        default=1000000,
+        help="keep only this many most frequent contexts (<=0 means no cap)",
+    )
+    return parser
 
-    random.seed(0)
 
-    if args.mode == 'train':
-        if not os.path.isdir(args.work_dir):
-            print('Making working directory {}'.format(args.work_dir))
-            os.makedirs(args.work_dir)
-        print('Instatiating model')
-        model = MyModel()
-        print('Loading training data')
-        train_data = MyModel.load_training_data()
-        print('Training')
-        model.run_train(train_data, args.work_dir)
-        print('Saving model')
-        model.save(args.work_dir)
-    elif args.mode == 'test':
-        print('Loading model')
-        model = MyModel.load(args.work_dir)
-        print('Loading test data from {}'.format(args.test_data))
-        test_data = MyModel.load_test_data(args.test_data)
-        print('Making predictions')
-        pred = model.run_pred(test_data)
-        print('Writing predictions to {}'.format(args.test_output))
-        assert len(pred) == len(test_data), 'Expected {} predictions but got {}'.format(len(test_data), len(pred))
-        model.write_pred(pred, args.test_output)
+if __name__ == "__main__":
+    args = build_parser().parse_args()
+
+    if args.mode == "train":
+        MyProgram.train(
+            work_dir=args.work_dir,
+            ngram_order=args.ngram_order,
+            laplace_alpha=args.laplace_alpha,
+            max_chars_per_context=args.max_chars_per_context,
+            min_context_count=args.min_context_count,
+            max_contexts=args.max_contexts,
+        )
+    elif args.mode == "test":
+        MyProgram.test(
+            work_dir=args.work_dir,
+            test_data_path=args.test_data,
+            test_output_path=args.test_output,
+        )
     else:
-        raise NotImplementedError('Unknown mode {}'.format(args.mode))
+        raise NotImplementedError(f"Unknown mode {args.mode}")
