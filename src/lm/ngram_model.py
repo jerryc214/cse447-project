@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 
 from .text_utils import normalize_text
 
+
 class CharNGramLanguageModel:
     def __init__(
         self,
@@ -13,19 +14,24 @@ class CharNGramLanguageModel:
         max_chars_per_context=64,
         min_context_count=3,
         max_contexts=1000000,
+        kn_discount=0.75,
     ):
         self.ngram_order = int(ngram_order)
         self.laplace_alpha = float(laplace_alpha)
         self.max_chars_per_context = int(max_chars_per_context)
         self.min_context_count = int(min_context_count)
         self.max_contexts = int(max_contexts)
+        self.kn_discount = float(kn_discount)
         self.context_counts = defaultdict(Counter)
         self.unigram = Counter()
-        # Keep fallback symbols script-agnostic. Real defaults are learned from unigram counts.
+        self.continuation_counts = Counter()
+        self.total_bigram_types = 0
         self.default_chars = [" ", ".", ",", "。", "،", "।", "，", "・", "-"]
 
     def fit(self, lines):
         max_context = self.ngram_order - 1
+        unique_bigrams = set()
+
         for raw_line in lines:
             sequence = normalize_text(raw_line)
             for idx, next_char in enumerate(sequence):
@@ -40,15 +46,27 @@ class CharNGramLanguageModel:
                     if context:
                         self.context_counts[context][next_char] += 1
 
+                # KN continuation count
+                if idx > 0:
+                    left_char = sequence[idx - 1]
+                    if left_char not in ("\n", "\r"):
+                        pair = (left_char, next_char)
+                        if pair not in unique_bigrams:
+                            unique_bigrams.add(pair)
+                            self.continuation_counts[next_char] += 1
+
+        self.total_bigram_types = len(unique_bigrams)
         self._trim_context_tables()
         self._refresh_default_chars()
 
     def predict_top_k(self, text, k=3):
         sequence = normalize_text(text)
-        scores = Counter()
         max_context = self.ngram_order - 1
 
-        for ctx_len in range(min(max_context, len(sequence)), 0, -1):
+        # KN unigram을 base로 시작, 짧은 context → 긴 context 순으로 덮어씌움
+        scores = self._kn_unigram_scores()
+
+        for ctx_len in range(1, min(max_context, len(sequence)) + 1):
             context = sequence[-ctx_len:]
             next_char_counts = self.context_counts.get(context)
             if not next_char_counts:
@@ -58,19 +76,21 @@ class CharNGramLanguageModel:
             if total <= 0:
                 continue
 
-            # Weighted backoff: longer context gets more influence.
-            context_weight = 1.0 / float(max_context - ctx_len + 1)
-            vocab_size = max(1, len(next_char_counts))
+            # Kneser-Ney: λ(h) = D * |{c: c(h,c)>0}| / N(h)
+            n_types = len(next_char_counts)
+            lambda_val = (self.kn_discount * n_types) / total
 
+            level = Counter()
             for char, count in next_char_counts.items():
                 if char in ("\n", "\r"):
                     continue
-                # Laplace smoothing (add-alpha); default alpha=1.0.
-                prob = (count + self.laplace_alpha) / (total + self.laplace_alpha * vocab_size)
-                scores[char] += context_weight * prob
+                level[char] = max(count - self.kn_discount, 0.0) / total
 
-        if self.unigram:
-            self._add_unigram_backoff(scores)
+            # P(c|h) = discounted_P(c|h) + λ(h) * P_lower(c)
+            blended = Counter()
+            for char in set(level.keys()) | set(scores.keys()):
+                blended[char] = level.get(char, 0.0) + lambda_val * scores.get(char, 0.0)
+            scores = blended
 
         guesses = []
         for char, _ in scores.most_common():
@@ -93,6 +113,25 @@ class CharNGramLanguageModel:
 
         return guesses[:k]
 
+    def _kn_unigram_scores(self) -> Counter:
+        """KN unigram: raw frequency 대신 continuation count 기반."""
+        scores = Counter()
+        if self.total_bigram_types > 0:
+            vocab_size = max(1, len(self.continuation_counts))
+            denom = self.total_bigram_types + self.laplace_alpha * vocab_size
+            for char, cont in self.continuation_counts.items():
+                if char in ("\n", "\r"):
+                    continue
+                scores[char] = (cont + self.laplace_alpha) / denom
+        else:
+            total = sum(self.unigram.values())
+            vocab_size = max(1, len(self.unigram))
+            for char, count in self.unigram.items():
+                if char in ("\n", "\r"):
+                    continue
+                scores[char] = (count + self.laplace_alpha) / (total + self.laplace_alpha * vocab_size)
+        return scores
+
     def predict_batch(self, inputs, k=3):
         predictions = []
         for line in inputs:
@@ -112,8 +151,11 @@ class CharNGramLanguageModel:
             "max_chars_per_context": self.max_chars_per_context,
             "min_context_count": self.min_context_count,
             "max_contexts": self.max_contexts,
-            "context_counts": {context: dict(counts) for context, counts in self.context_counts.items()},
+            "kn_discount": self.kn_discount,
+            "context_counts": {ctx: dict(c) for ctx, c in self.context_counts.items()},
             "unigram": dict(self.unigram),
+            "continuation_counts": dict(self.continuation_counts),
+            "total_bigram_types": self.total_bigram_types,
             "default_chars": self.default_chars,
         }
         checkpoint_path = os.path.join(work_dir, "model.checkpoint")
@@ -132,11 +174,14 @@ class CharNGramLanguageModel:
             max_chars_per_context=payload.get("max_chars_per_context", 64),
             min_context_count=payload.get("min_context_count", 3),
             max_contexts=payload.get("max_contexts", 1000000),
+            kn_discount=payload.get("kn_discount", 0.75),
         )
         model.context_counts = defaultdict(Counter)
-        for context, counts in payload.get("context_counts", {}).items():
-            model.context_counts[context] = Counter(counts)
+        for ctx, counts in payload.get("context_counts", {}).items():
+            model.context_counts[ctx] = Counter(counts)
         model.unigram = Counter(payload.get("unigram", {}))
+        model.continuation_counts = Counter(payload.get("continuation_counts", {}))
+        model.total_bigram_types = payload.get("total_bigram_types", 0)
         model.default_chars = payload.get("default_chars", model.default_chars)
         return model
 
@@ -147,11 +192,9 @@ class CharNGramLanguageModel:
             if total < self.min_context_count:
                 continue
             ranked_contexts.append((context, total, counts))
-
         ranked_contexts.sort(key=lambda item: item[1], reverse=True)
         if self.max_contexts > 0:
             ranked_contexts = ranked_contexts[: self.max_contexts]
-
         trimmed = defaultdict(Counter)
         for context, _, counts in ranked_contexts:
             top_items = counts.most_common(self.max_chars_per_context)
@@ -162,28 +205,14 @@ class CharNGramLanguageModel:
     def _refresh_default_chars(self):
         if not self.unigram:
             return
-
         frequent_defaults = [
-            char for char, _ in self.unigram.most_common(self.max_chars_per_context) if char not in ("\n", "\r")
+            char for char, _ in self.unigram.most_common(self.max_chars_per_context)
+            if char not in ("\n", "\r")
         ]
         merged = []
         seen = set()
-
         for char in frequent_defaults + self.default_chars:
             if char not in seen:
                 seen.add(char)
                 merged.append(char)
-
         self.default_chars = merged
-
-    def _add_unigram_backoff(self, scores):
-        total = sum(self.unigram.values())
-        if total <= 0:
-            return
-
-        vocab_size = max(1, len(self.unigram))
-        for char, count in self.unigram.most_common(128):
-            if char in ("\n", "\r"):
-                continue
-            prob = (count + self.laplace_alpha) / (total + self.laplace_alpha * vocab_size)
-            scores[char] += 0.05 * prob
