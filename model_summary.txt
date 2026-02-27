@@ -44,3 +44,11 @@ Improvements of submitted model (t6_expanded):
 Decision rationale:
 - Project goal prioritizes reducing error while keeping runtime under limits.
 - t6_expanded gave the strongest multilingual accuracy gain on balanced dev2 and remained operationally stable.
+
+Data expansion used for t6_expanded:
+- Base language files:
+  ar,bn,de,en,es,fa,fr,hi,id,it,ja,ko,nl,pl,pt,ru,sw,th,tr,uk,ur,vi,zh
+- Added language files:
+  iw,am,ta,te,ml,mr,gu,pa,si,my,km,lo,ne,cs,ro,el,bg,sr
+- Download command:
+  python scripts/download_mc4.py --dataset mc4 --langs iw,am,ta,te,ml,mr,gu,pa,si,my,km,lo,ne,cs,ro,el,bg,sr --lines_per_lang 5000 --output_dir data
