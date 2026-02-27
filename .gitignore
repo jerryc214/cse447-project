@@ -3,3 +3,10 @@ work/
 output/
 submit/
 submit.zip
+.DS_Store
+data/
+eval/
+eval2/
+out_*/
+work_*/
+Project447Group*.zip

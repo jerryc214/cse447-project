@@ -12,6 +12,7 @@ class MyProgram:
         work_dir,
         ngram_order,
         laplace_alpha,
+        kn_discount,
         max_chars_per_context,
         min_context_count,
         max_contexts,
@@ -24,6 +25,7 @@ class MyProgram:
         model = CharNGramLanguageModel(
             ngram_order=ngram_order,
             laplace_alpha=laplace_alpha,
+            kn_discount=kn_discount,
             max_chars_per_context=max_chars_per_context,
             min_context_count=min_context_count,
             max_contexts=max_contexts,
@@ -72,6 +74,12 @@ def build_parser():
         help="Laplace smoothing alpha (add-alpha); use 1.0 for standard Laplace",
     )
     parser.add_argument(
+        "--kn_discount",
+        type=float,
+        default=0.75,
+        help="Kneser-Ney discount D",
+    )
+    parser.add_argument(
         "--max_chars_per_context",
         type=int,
         default=64,
@@ -100,6 +108,7 @@ if __name__ == "__main__":
             work_dir=args.work_dir,
             ngram_order=args.ngram_order,
             laplace_alpha=args.laplace_alpha,
+            kn_discount=args.kn_discount,
             max_chars_per_context=args.max_chars_per_context,
             min_context_count=args.min_context_count,
             max_contexts=args.max_contexts,

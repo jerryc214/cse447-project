@@ -46,7 +46,6 @@ class CharNGramLanguageModel:
                     if context:
                         self.context_counts[context][next_char] += 1
 
-                # KN continuation count
                 if idx > 0:
                     left_char = sequence[idx - 1]
                     if left_char not in ("\n", "\r"):
@@ -63,7 +62,6 @@ class CharNGramLanguageModel:
         sequence = normalize_text(text)
         max_context = self.ngram_order - 1
 
-        # KN unigram을 base로 시작, 짧은 context → 긴 context 순으로 덮어씌움
         scores = self._kn_unigram_scores()
 
         for ctx_len in range(1, min(max_context, len(sequence)) + 1):
@@ -76,7 +74,6 @@ class CharNGramLanguageModel:
             if total <= 0:
                 continue
 
-            # Kneser-Ney: λ(h) = D * |{c: c(h,c)>0}| / N(h)
             n_types = len(next_char_counts)
             lambda_val = (self.kn_discount * n_types) / total
 
@@ -86,7 +83,6 @@ class CharNGramLanguageModel:
                     continue
                 level[char] = max(count - self.kn_discount, 0.0) / total
 
-            # P(c|h) = discounted_P(c|h) + λ(h) * P_lower(c)
             blended = Counter()
             for char in set(level.keys()) | set(scores.keys()):
                 blended[char] = level.get(char, 0.0) + lambda_val * scores.get(char, 0.0)
@@ -114,7 +110,6 @@ class CharNGramLanguageModel:
         return guesses[:k]
 
     def _kn_unigram_scores(self) -> Counter:
-        """KN unigram: raw frequency 대신 continuation count 기반."""
         scores = Counter()
         if self.total_bigram_types > 0:
             vocab_size = max(1, len(self.continuation_counts))

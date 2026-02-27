@@ -1,0 +1,46 @@
+Model Summary (Checkpoint 3)
+Date: 2026-02-26
+
+Submitted model:
+- Name: t6_expanded
+- Checkpoint path: work_t6_expanded/model.checkpoint
+- Submission packaging command used: SUBMIT_WORK_DIR=work_t6_expanded bash submit.sh
+- Note: work/model.checkpoint has been aligned to submitted model.
+
+Valid models tracked:
+1) baseline
+   - Work dir: work_baseline
+   - Params: ngram_order=6, kn_discount=0.75 (default), laplace_alpha=1.0,
+             max_chars_per_context=48, min_context_count=5, max_contexts=300000
+2) kn_initial
+   - Work dir: work_kn_fast2
+   - Params: ngram_order=6, kn_discount=0.5, laplace_alpha=0.01,
+             max_chars_per_context=48, min_context_count=3, max_contexts=500000
+3) t5_balanced
+   - Work dir: work_t5_balanced
+   - Params: same as kn_initial + balanced-by-file loading during capped training
+4) t6_expanded (submitted)
+   - Work dir: work_t6_expanded
+   - Params: same as t5_balanced, trained after expanding language set
+
+Evaluation references:
+- Small example sanity metric (13 lines): grader/grade.sh with example data
+- Main local selection metric: eval2 (balanced multilingual dev2), 8200 samples
+
+Eval2 results (top-3 accuracy, scripts/compare_models.py):
+- baseline:    acc=0.4105 (3366/8200), infer_sec=57.2856, checkpoint_mb=15.08
+- kn_initial:  acc=0.4307 (3532/8200), infer_sec=60.0734, checkpoint_mb=20.80
+- t5_balanced: acc=0.4928 (4041/8200), infer_sec=92.7849, checkpoint_mb=24.98
+- t6_expanded: acc=0.5922 (4856/8200), infer_sec=96.9267, checkpoint_mb=26.98
+
+Improvements of submitted model (t6_expanded):
+- vs baseline:
+  - accuracy: +0.1817 absolute (+44.26% relative)
+  - infer time: +39.6411 sec (slower)
+- vs initial tuned KN (kn_initial):
+  - accuracy: +0.1615 absolute (+37.50% relative)
+  - infer time: +36.8533 sec (slower)
+
+Decision rationale:
+- Project goal prioritizes reducing error while keeping runtime under limits.
+- t6_expanded gave the strongest multilingual accuracy gain on balanced dev2 and remained operationally stable.
