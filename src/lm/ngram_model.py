@@ -27,6 +27,12 @@ class CharNGramLanguageModel:
         self.continuation_counts = Counter()
         self.total_bigram_types = 0
         self.default_chars = [" ", ".", ",", "。", "،", "।", "，", "・", "-"]
+        self._base_unigram_scores = {}
+        self._base_unigram_ranking = []
+        self._context_runtime = {}
+        self._prediction_cache = {}
+        self._prediction_cache_max = 100000
+        self._runtime_signature = None
 
     def fit(self, lines):
         max_context = self.ngram_order - 1
@@ -57,39 +63,53 @@ class CharNGramLanguageModel:
         self.total_bigram_types = len(unique_bigrams)
         self._trim_context_tables()
         self._refresh_default_chars()
+        self._rebuild_runtime_tables()
 
     def predict_top_k(self, text, k=3):
+        self._ensure_runtime_tables()
         sequence = normalize_text(text)
         max_context = self.ngram_order - 1
 
-        scores = self._kn_unigram_scores()
+        suffix = sequence[-max_context:] if max_context > 0 else ""
+        cache_key = (suffix, int(k))
+        cached = self._prediction_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
 
+        backoff_scale = 1.0
+        additive = {}
         for ctx_len in range(1, min(max_context, len(sequence)) + 1):
             context = sequence[-ctx_len:]
-            next_char_counts = self.context_counts.get(context)
-            if not next_char_counts:
+            runtime = self._context_runtime.get(context)
+            if not runtime:
                 continue
 
-            total = sum(next_char_counts.values())
-            if total <= 0:
+            lambda_val, level = runtime
+            if additive and lambda_val != 1.0:
+                for char in list(additive.keys()):
+                    additive[char] *= lambda_val
+            backoff_scale *= lambda_val
+            for char, score in level.items():
+                additive[char] = additive.get(char, 0.0) + score
+
+        candidate_scores = []
+        for char, score in additive.items():
+            candidate_scores.append(
+                (char, score + backoff_scale * self._base_unigram_scores.get(char, 0.0))
+            )
+
+        added_backoff = 0
+        for char in self._base_unigram_ranking:
+            if char in additive:
                 continue
+            candidate_scores.append((char, backoff_scale * self._base_unigram_scores.get(char, 0.0)))
+            added_backoff += 1
+            if added_backoff >= k:
+                break
 
-            n_types = len(next_char_counts)
-            lambda_val = (self.kn_discount * n_types) / total
-
-            level = Counter()
-            for char, count in next_char_counts.items():
-                if char in ("\n", "\r"):
-                    continue
-                level[char] = max(count - self.kn_discount, 0.0) / total
-
-            blended = Counter()
-            for char in set(level.keys()) | set(scores.keys()):
-                blended[char] = level.get(char, 0.0) + lambda_val * scores.get(char, 0.0)
-            scores = blended
-
+        candidate_scores.sort(key=lambda item: (item[1], item[0]), reverse=True)
         guesses = []
-        for char, _ in scores.most_common():
+        for char, _ in candidate_scores:
             if char in ("\n", "\r"):
                 continue
             if char not in guesses:
@@ -107,7 +127,11 @@ class CharNGramLanguageModel:
         while len(guesses) < k:
             guesses.append(" ")
 
-        return guesses[:k]
+        result = guesses[:k]
+        if len(self._prediction_cache) >= self._prediction_cache_max:
+            self._prediction_cache.clear()
+        self._prediction_cache[cache_key] = tuple(result)
+        return result
 
     def _kn_unigram_scores(self) -> Counter:
         scores = Counter()
@@ -178,6 +202,7 @@ class CharNGramLanguageModel:
         model.continuation_counts = Counter(payload.get("continuation_counts", {}))
         model.total_bigram_types = payload.get("total_bigram_types", 0)
         model.default_chars = payload.get("default_chars", model.default_chars)
+        model._rebuild_runtime_tables()
         return model
 
     def _trim_context_tables(self):
@@ -196,6 +221,7 @@ class CharNGramLanguageModel:
             if top_items:
                 trimmed[context] = Counter(dict(top_items))
         self.context_counts = trimmed
+        self._runtime_signature = None
 
     def _refresh_default_chars(self):
         if not self.unigram:
@@ -211,3 +237,49 @@ class CharNGramLanguageModel:
                 seen.add(char)
                 merged.append(char)
         self.default_chars = merged
+
+    def _build_runtime_signature(self):
+        return (
+            id(self.context_counts),
+            id(self.unigram),
+            id(self.continuation_counts),
+            len(self.context_counts),
+            len(self.unigram),
+            len(self.continuation_counts),
+            self.total_bigram_types,
+            self.kn_discount,
+            self.laplace_alpha,
+        )
+
+    def _ensure_runtime_tables(self):
+        signature = self._build_runtime_signature()
+        if signature != self._runtime_signature:
+            self._rebuild_runtime_tables()
+
+    def _rebuild_runtime_tables(self):
+        base = self._kn_unigram_scores()
+        self._base_unigram_scores = dict(base)
+        self._base_unigram_ranking = [
+            char for char, _ in base.most_common() if char not in ("\n", "\r")
+        ]
+
+        context_runtime = {}
+        for context, next_char_counts in self.context_counts.items():
+            total = sum(next_char_counts.values())
+            if total <= 0:
+                continue
+
+            n_types = len(next_char_counts)
+            lambda_val = (self.kn_discount * n_types) / total
+            level = {}
+            for char, count in next_char_counts.items():
+                if char in ("\n", "\r"):
+                    continue
+                discounted = max(count - self.kn_discount, 0.0) / total
+                if discounted > 0.0:
+                    level[char] = discounted
+            context_runtime[context] = (lambda_val, level)
+
+        self._context_runtime = context_runtime
+        self._prediction_cache.clear()
+        self._runtime_signature = self._build_runtime_signature()
